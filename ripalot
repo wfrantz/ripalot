@@ -1,0 +1,77 @@
+#!/usr/bin/env python3.6
+import datetime, re, subprocess, sys, time, threading
+
+# set to True to ensure that only one drive is open at once
+serialize_disc_load = False
+# how often to poll a drive when waiting for a CD, in seconds
+drive_polling_interval = 10
+
+def open_paranoia_stream(device_filename, raw_output=False):
+	paranoia_command = [ 'cdparanoia' ]
+	if raw_output: paranoia_command.append('--output-raw-little-endian')
+	paranoia_command += [ '-qd', device_filename, '--disable-paranoia', '[0]-', '-' ]
+	return subprocess.Popen(paranoia_command, stdout=subprocess.PIPE).stdout
+
+def load_disc_names(filehandle):
+	raw_disc_names = filter(lambda s: len(s) != 0 and s[0] != '#', map(str.strip, filehandle))
+	disc_names = []
+	num_token_regex = re.compile(r'\[([0-9]+)\]')
+	for raw_disc_name in raw_disc_names:
+		num_token_match = num_token_regex.search(raw_disc_name)
+		if num_token_match:
+			num_token = num_token_match.group(0)
+			disc_count = int(num_token_match.group(1))
+			disc_names.extend([raw_disc_name.replace(num_token, str(i+1)) for i in range(disc_count)])
+		else:
+			disc_names.append(raw_disc_name)
+	return disc_names
+
+def rip_and_verify_disc(device_filename, device_lun, disc_name):
+	if not serialize_disc_load: open_drive_and_prompt_for_cd(device_filename, disc_name)
+	start_time = datetime.datetime.now()
+	subprocess.run(['cdda2wav', '-q', '-no-textfile', '-cuefile', '-info-only', '-t', 'all',
+		'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
+	subprocess.run(['sed', '-I', '', '-E', '/^ *(TITLE|PERFORMER|REM|INDEX 00|PREGAP)/d',
+		disc_name + '.cue'])
+	subprocess.run(['flac', '-s', '--cuesheet', disc_name + '.cue', '--no-cued-seekpoint',
+		'-o', disc_name + '.flac', '-'], stdin=open_paranoia_stream(device_filename))
+	encoded_md5 = subprocess.run(['metaflac', '--show-md5sum', disc_name + '.flac'],
+		stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
+	verified_md5 = subprocess.run('md5', stdin=open_paranoia_stream(device_filename, True),
+		stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
+	print(device_filename + ':', 'Ripped and verified in', datetime.datetime.now() - start_time)
+	if (encoded_md5 != verified_md5):
+		print(device_filename + ':', 'MD5 mismatch, possible bad CD.')
+		print(device_filename + ':', 'MD5 from .flac file:', encoded_md5)
+		print(device_filename + ':', 'MD5 from verification rip:', verified_md5)
+
+def find_cd_device_params(device_entry):
+	cd_device_entry_regex = re.compile(r'at scbus(\d+) target (\d+) lun (\d+) \((cd\d+),(pass\d+)\)$')
+	cd_device_entry_match = cd_device_entry_regex.search(device_entry)
+	if cd_device_entry_match:
+		device_lun = '{},{},{}'.format(*cd_device_entry_match.group(1,2,3))
+		device_filename = '/dev/' + cd_device_entry_match.group(4)
+		# pass_device_filename = '/dev/' + cd_device_entry_match.group(5)
+		return (device_filename, device_lun)
+
+def open_drive_and_prompt_for_cd(device_filename, disc_name):
+	subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
+	print(device_filename + ':', 'Insert', disc_name)
+	time.sleep(drive_polling_interval)
+	while not subprocess.run(['cdcontrol', '-f', device_filename, 'cdid'], stdout=subprocess.PIPE).stdout:
+		time.sleep(drive_polling_interval)
+
+if __name__ == '__main__':
+	camcontrol_process = subprocess.Popen(['camcontrol', 'devlist'],
+		stdout=subprocess.PIPE, encoding='ascii')
+	devices = list(filter(None, map(find_cd_device_params, camcontrol_process.stdout)))
+	disc_names = load_disc_names(sys.stdin)
+	while disc_names:
+		threads = []
+		for device in devices:
+			if not disc_names: break
+			disc_name = disc_names.pop(0)
+			if serialize_disc_load: open_drive_and_prompt_for_cd(device[0], disc_name)
+			threads.append(threading.Thread(target=rip_and_verify_disc, args=device + (disc_name,)))
+		for thread in threads: thread.start()
+		for thread in threads: thread.join()
