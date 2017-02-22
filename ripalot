@@ -16,52 +16,53 @@ def open_paranoia_stream(device_filename, raw_output=False):
 	paranoia_command += [ '-qd', device_filename, '--disable-paranoia', '[0]-', '-' ]
 	return subprocess.Popen(paranoia_command, stdout=subprocess.PIPE).stdout
 
-def load_disc_names(filehandle):
-	raw_disc_names = filter(lambda s: len(s) != 0 and s[0] != '#', map(str.strip, filehandle))
-	disc_names = []
+def parse_disc_names(filehandle):
 	num_token_regex = re.compile(r'\[([0-9]+)\]')
-	for raw_disc_name in raw_disc_names:
+	for raw_disc_name in filter(lambda s: len(s) != 0 and s[0] != '#', map(str.strip, filehandle)):
 		num_token_match = num_token_regex.search(raw_disc_name)
 		if num_token_match:
 			num_token = num_token_match.group(0)
 			disc_count = int(num_token_match.group(1))
-			disc_names.extend([raw_disc_name.replace(num_token, str(i+1)) for i in range(disc_count)])
+			for i in range(disc_count):
+				yield raw_disc_name.replace(num_token, str(i+1))
+			# disc_names.extend([raw_disc_name.replace(num_token, str(i+1)) for i in range(disc_count)])
 		else:
-			disc_names.append(raw_disc_name)
-	return disc_names
+			yield raw_disc_name
+			# disc_names.append(raw_disc_name)
 
-def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_drive_lock):
+def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_drive_lock, print_lock):
 
 	def log_thread_event(*print_args):
-		print(device_filename + ':', *print_args)
+		with print_lock: print(device_filename + ':', *print_args)
 
-	try:
-		while True:
-			disc_name = disc_name_queue.get_nowait()
-			with open_drive_lock:
-				open_drive_and_prompt_for_cd(device_filename, disc_name)
-			start_time = datetime.now()
-			log_thread_event('Reading TOC for', disc_name)
-			subprocess.run(['cdda2wav', '-cuefile', '-info-only', '-t', 'all',
-				'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
-			open(disc_name + '.stripped.cue', 'w').writelines(
-				filter(cue_sheet_line_filter, open(disc_name + '.cue')))
-			log_thread_event('Reading audio data for', disc_name)
-			subprocess.run(['flac', '-s', '--cuesheet', disc_name + '.stripped.cue', '--no-cued-seekpoint',
-				'-o', disc_name + '.flac', '-'], stdin=open_paranoia_stream(device_filename))
-			encoded_md5 = subprocess.run(['metaflac', '--show-md5sum', disc_name + '.flac'],
-				stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
-			verified_md5 = subprocess.run('md5', stdin=open_paranoia_stream(device_filename, True),
-				stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
-			log_thread_event('Ripped and verified', disc_name, 'in', datetime.now() - start_time)
-			if (encoded_md5 != verified_md5):
-				log_thread_event('MD5 mismatch, possible bad CD.')
-				log_thread_event('MD5 from .flac file:', encoded_md5)
-				log_thread_event('MD5 from verification rip:', verified_md5)
-	except queue.Empty:
-		log_thread_event('No more discs in queue, ejecting tray.')
+	# try:
+	while True:
+		disc_name = disc_name_queue.get()
 		with open_drive_lock:
-			subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
+			open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock)
+		start_time = datetime.now()
+		log_thread_event('Reading TOC for', disc_name)
+		subprocess.run(['cdda2wav', '-cuefile', '-info-only', '-t', 'all',
+			'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
+		open(disc_name + '.stripped.cue', 'wb').writelines(
+			filter(cue_sheet_line_filter, open(disc_name + '.cue', 'rb')))
+		log_thread_event('Reading audio data for', disc_name)
+		subprocess.run(['flac', '-s', '--cuesheet', disc_name + '.stripped.cue', '--no-cued-seekpoint',
+			'-o', disc_name + '.flac', '-'], stdin=open_paranoia_stream(device_filename))
+		encoded_md5 = subprocess.run(['metaflac', '--show-md5sum', disc_name + '.flac'],
+			stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
+		verified_md5 = subprocess.run('md5', stdin=open_paranoia_stream(device_filename, True),
+			stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
+		log_thread_event('Ripped and verified', disc_name, 'in', datetime.now() - start_time)
+		if (encoded_md5 != verified_md5):
+			log_thread_event('MD5 mismatch, possible bad CD.')
+			log_thread_event('MD5 from .flac file:', encoded_md5)
+			log_thread_event('MD5 from verification rip:', verified_md5)
+		disc_name_queue.task_done()
+	# except queue.Empty:
+	# 	log_thread_event('No more discs in queue, ejecting tray.')
+	# 	with open_drive_lock:
+	# 		subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
 
 def find_cd_device_params(device_entry):
 	cd_device_entry_regex = re.compile(r'at scbus(\d+) target (\d+) lun (\d+) \((cd\d+),(pass\d+)\)$')
@@ -72,9 +73,9 @@ def find_cd_device_params(device_entry):
 		# pass_device_filename = '/dev/' + cd_device_entry_match.group(5)
 		return (device_filename, device_lun)
 
-def open_drive_and_prompt_for_cd(device_filename, disc_name):
+def open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock):
 	subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
-	print(device_filename + ':', 'Insert', disc_name)
+	with print_lock: print(device_filename + ':', 'Insert', disc_name)
 	time.sleep(drive_polling_interval)
 	while not subprocess.run(['cdcontrol', '-f', device_filename, 'cdid'], stdout=subprocess.PIPE).stdout:
 		time.sleep(drive_polling_interval)
@@ -82,10 +83,13 @@ def open_drive_and_prompt_for_cd(device_filename, disc_name):
 if __name__ == '__main__':
 	camcontrol_process = subprocess.Popen(['camcontrol', 'devlist'],
 		stdout=subprocess.PIPE, encoding='ascii')
-	devices = list(filter(None, map(find_cd_device_params, camcontrol_process.stdout)))
+	devices = filter(None, map(find_cd_device_params, camcontrol_process.stdout))
 	disc_name_queue = queue.Queue()
 	open_drive_lock = threading.Lock()
-	for disc_name in load_disc_names(sys.stdin):
-		disc_name_queue.put(disc_name)
+	print_lock = threading.Lock()
 	for device in devices:
-		threading.Thread(target=rip_and_verify_thread, args=device + (disc_name_queue, open_drive_lock)).start()
+		threading.Thread(target=rip_and_verify_thread,
+			args=device + (disc_name_queue, open_drive_lock, print_lock), daemon=True).start()
+	for disc_name in parse_disc_names(sys.stdin):
+		disc_name_queue.put(disc_name)
+	disc_name_queue.join()
