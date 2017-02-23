@@ -4,8 +4,8 @@ from datetime import datetime
 
 # how often to poll a drive when waiting for a CD, in seconds
 drive_polling_interval = 5
-# regex for lines to filter out of cue sheet
-cue_sheet_filter_regex = re.compile(r'^ *(TITLE|PERFORMER|REM|PREGAP|CDTEXTFILE|INDEX 00(?! 00:00:00))')
+# regex for lines to strip from cue sheet
+cue_sheet_filter_regex = re.compile(rb'^ *(TITLE|PERFORMER|REM|PREGAP|CDTEXTFILE|INDEX 00(?! 00:00:00))')
 
 def cue_sheet_line_filter(line):
 	return not cue_sheet_filter_regex.search(line)
@@ -25,17 +25,14 @@ def parse_disc_names(filehandle):
 			disc_count = int(num_token_match.group(1))
 			for i in range(disc_count):
 				yield raw_disc_name.replace(num_token, str(i+1))
-			# disc_names.extend([raw_disc_name.replace(num_token, str(i+1)) for i in range(disc_count)])
 		else:
 			yield raw_disc_name
-			# disc_names.append(raw_disc_name)
 
 def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_drive_lock, print_lock):
 
 	def log_thread_event(*print_args):
 		with print_lock: print(device_filename + ':', *print_args)
 
-	# try:
 	while True:
 		disc_name = disc_name_queue.get()
 		with open_drive_lock:
@@ -59,10 +56,6 @@ def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_dri
 			log_thread_event('MD5 from .flac file:', encoded_md5)
 			log_thread_event('MD5 from verification rip:', verified_md5)
 		disc_name_queue.task_done()
-	# except queue.Empty:
-	# 	log_thread_event('No more discs in queue, ejecting tray.')
-	# 	with open_drive_lock:
-	# 		subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
 
 def find_cd_device_params(device_entry):
 	cd_device_entry_regex = re.compile(r'at scbus(\d+) target (\d+) lun (\d+) \((cd\d+),(pass\d+)\)$')
