@@ -15,7 +15,7 @@ drives. Linux support may or may not be added in the future.
 - Python 3.6
 
 ## Usage
-IMPORTANT: Make sure to set your device permissions correctly (see the Gotchas selection below),
+**IMPORTANT**: Make sure to set your device permissions correctly (see the Gotchas section below),
 otherwise ripalot won't work.
 
 Run ripalot from the command line, providing a list of disc names (one per line) on standard in.
@@ -33,7 +33,7 @@ directory that you ran the script from. That's really about it.
 		echo "Some Album Disc 3" >> disc_names.txt
 		./ripalot < disc_names.txt
 
-- Use echo for quick jobs:
+- Use `echo` for quick jobs:
 
 		echo "Some Album Disc [3]" | ./ripalot
 
@@ -45,7 +45,7 @@ directory that you ran the script from. That's really about it.
 		./ripalot
 
 	...and input your disc names line by line at the terminal. You can continue adding names after
-	ripping has started. ripalot will pause for more input whenever it runs out of names until EOF
+	ripping has started. ripalot will wait for more input whenever it runs out of names until EOF
 	(Ctrl-D) is entered to signal the end of the list.
 
 ## Gotchas
