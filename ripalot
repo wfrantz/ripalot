@@ -6,6 +6,7 @@ from datetime import datetime
 drive_polling_interval = 5
 # regex for lines to strip from cue sheet
 cue_sheet_filter_regex = re.compile(rb'^ *(TITLE|PERFORMER|REM|PREGAP|CDTEXTFILE|INDEX 00(?! 00:00:00))')
+flac_compression_level_switch = '--best'
 
 def cue_sheet_line_filter(line):
 	return not cue_sheet_filter_regex.search(line)
@@ -38,14 +39,15 @@ def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_dri
 		with open_drive_lock:
 			open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock)
 		start_time = datetime.now()
-		log_thread_event('Reading TOC for', disc_name)
+		log_thread_event('Reading table of contents for', disc_name)
 		subprocess.run(['cdda2wav', '-cuefile', '-info-only', '-t', 'all',
 			'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
 		open(disc_name + '.stripped.cue', 'wb').writelines(
 			filter(cue_sheet_line_filter, open(disc_name + '.cue', 'rb')))
 		log_thread_event('Reading audio data for', disc_name)
 		subprocess.run(['flac', '-s', '--cuesheet', disc_name + '.stripped.cue', '--no-cued-seekpoint',
-			'-o', disc_name + '.flac', '-'], stdin=open_paranoia_stream(device_filename))
+			flac_compression_level_switch, '-o', disc_name + '.flac', '-'],
+			stdin=open_paranoia_stream(device_filename))
 		encoded_md5 = subprocess.run(['metaflac', '--show-md5sum', disc_name + '.flac'],
 			stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
 		verified_md5 = subprocess.run('md5', stdin=open_paranoia_stream(device_filename, True),
@@ -115,3 +117,4 @@ if __name__ == '__main__':
 	for disc_name in parse_disc_names(sys.stdin):
 		disc_name_queue.put(disc_name)
 	disc_name_queue.join()
+	for device in devices: subprocess.run(['cdcontrol', '-f', device[0], 'eject'])
