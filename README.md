@@ -58,10 +58,9 @@ device) access also requires adding some lines to `/etc/devfs.conf` and rebootin
 		perm	pass1	0660
 		perm	pass2	0660
 
-	The `pass#` lines should correspond to your optical drives, run `camcontrol devlist` as root to
-	get the correct ones. These may change if you make changes to your hardware configuration,
-	such as adding a controller card. I will try to make this entire process less painful with
-	future updates.
+	The `pass#` lines should correspond to your optical drives. ripalot will detect misconfigured
+	device permissions on startup and indicate which devices need entries added. These may change
+	if you make changes to your hardware configuration, such as adding a controller card. 
 
 - Amazingly enough, there are SATA controllers that will bottleneck two or more fast drives ripping
 at full speed, causing their read speeds to fluctuate and possibly introducing read errors. This

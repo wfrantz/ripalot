@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.6
-import queue, re, subprocess, sys, time, threading
+import os, queue, re, subprocess, sys, time, threading
 from datetime import datetime
 
 # how often to poll a drive when waiting for a CD, in seconds
@@ -13,7 +13,7 @@ def cue_sheet_line_filter(line):
 def open_paranoia_stream(device_filename, raw_output=False):
 	paranoia_command = [ 'cdparanoia' ]
 	if raw_output: paranoia_command.append('--output-raw-little-endian')
-	paranoia_command += [ '-qd', device_filename, '--disable-paranoia', '[0]-', '-' ]
+	paranoia_command += [ '-qd', os.path.join('/dev', device_filename), '--disable-paranoia', '[0]-', '-' ]
 	return subprocess.Popen(paranoia_command, stdout=subprocess.PIPE).stdout
 
 def parse_disc_names(filehandle):
@@ -62,9 +62,18 @@ def find_cd_device_params(device_entry):
 	cd_device_entry_match = cd_device_entry_regex.search(device_entry)
 	if cd_device_entry_match:
 		device_lun = '{},{},{}'.format(*cd_device_entry_match.group(1,2,3))
-		device_filename = '/dev/' + cd_device_entry_match.group(4)
-		# pass_device_filename = '/dev/' + cd_device_entry_match.group(5)
-		return (device_filename, device_lun)
+		device_filename = cd_device_entry_match.group(4)
+		high_level_device_perms_ok = device_readable(device_filename)
+		pass_device_filename = cd_device_entry_match.group(5)
+		low_level_device_perms_ok = device_readable_and_writable(pass_device_filename)
+		if not high_level_device_perms_ok:
+			print('Need read permission for', os.path.join('/dev', device_filename))
+		if not low_level_device_perms_ok:
+			print('Need read and write permissions for', os.path.join('/dev', pass_device_filename))
+		if high_level_device_perms_ok and low_level_device_perms_ok:
+			return (device_filename, device_lun)
+		else:
+			print(device_filename, 'is not usable due to inadequate permissions (see above)')
 
 def open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock):
 	subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
@@ -73,10 +82,30 @@ def open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock):
 	while not subprocess.run(['cdcontrol', '-f', device_filename, 'cdid'], stdout=subprocess.PIPE).stdout:
 		time.sleep(drive_polling_interval)
 
+def can_open_device_with_mode(device_filename, mode):
+	try:
+		open(os.path.join('/dev', device_filename), mode)
+		return True
+	except PermissionError:
+		return False
+
+def device_readable(device_filename):
+	return can_open_device_with_mode(device_filename, 'r')
+
+def device_readable_and_writable(device_filename):
+	return can_open_device_with_mode(device_filename, 'r+b')
+
+def bail_out(*error_message):
+	print(*error_message, file=sys.stderr)
+	sys.exit(1)
+
 if __name__ == '__main__':
+	if not device_readable_and_writable('xpt0'):
+		bail_out('Need read and write permissions for /dev/xpt0!')
 	camcontrol_process = subprocess.Popen(['camcontrol', 'devlist'],
 		stdout=subprocess.PIPE, encoding='ascii')
-	devices = filter(None, map(find_cd_device_params, camcontrol_process.stdout))
+	devices = list(filter(None, map(find_cd_device_params, camcontrol_process.stdout)))
+	if not devices: bail_out('No usable optical drives found!')
 	disc_name_queue = queue.Queue()
 	open_drive_lock = threading.Lock()
 	print_lock = threading.Lock()
