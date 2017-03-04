@@ -5,7 +5,7 @@ from datetime import datetime
 # how often to poll a drive when waiting for a CD, in seconds
 drive_polling_interval = 5
 # regex for lines to strip from cue sheet
-cue_sheet_filter_regex = re.compile(rb'^ *(TITLE|PERFORMER|REM|PREGAP|CDTEXTFILE|INDEX 00(?! 00:00:00))')
+cue_sheet_filter_regex = re.compile(rb'^ *(TITLE|PERFORMER|REM|PREGAP|CDTEXTFILE|FILE|INDEX 00(?! 00:00:00))')
 flac_compression_level_switch = '--best'
 
 def cue_sheet_line_filter(line):
@@ -40,14 +40,22 @@ def rip_and_verify_thread(device_filename, device_lun, disc_name_queue, open_dri
 			open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock)
 		start_time = datetime.now()
 		log_thread_event('Reading table of contents for', disc_name)
-		subprocess.run(['cdda2wav', '-cuefile', '-info-only', '-t', 'all',
-			'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
+		cdda2wav_result = subprocess.run(['cdda2wav', '-cuefile', '-info-only', '-t', 'all',
+				'dev=' + device_lun, disc_name + '.wav'], stderr=subprocess.DEVNULL)
+		if cdda2wav_result.returncode != 0:
+			log_thread_event('cdda2wav returned non-zero error code, skipping this disc...')
+			disc_name_queue.task_done()
+			continue
 		open(disc_name + '.stripped.cue', 'wb').writelines(
 			filter(cue_sheet_line_filter, open(disc_name + '.cue', 'rb')))
 		log_thread_event('Reading audio data for', disc_name)
-		subprocess.run(['flac', '-s', '--cuesheet', disc_name + '.stripped.cue', '--no-cued-seekpoint',
-			flac_compression_level_switch, '-o', disc_name + '.flac', '-'],
-			stdin=open_paranoia_stream(device_filename))
+		flac_result = subprocess.run(['flac', '-ws', '--cuesheet', disc_name + '.stripped.cue',
+				'--no-cued-seekpoint', flac_compression_level_switch, '-o', disc_name + '.flac', '-'],
+				stdin=open_paranoia_stream(device_filename))
+		if flac_result.returncode != 0:
+			log_thread_event('flac returned non-zero error code, skipping this disc...')
+			disc_name_queue.task_done()
+			continue
 		encoded_md5 = subprocess.run(['metaflac', '--show-md5sum', disc_name + '.flac'],
 			stdout=subprocess.PIPE, encoding='ascii').stdout.strip()
 		verified_md5 = subprocess.run('md5', stdin=open_paranoia_stream(device_filename, True),
@@ -80,9 +88,12 @@ def find_cd_device_params(device_entry):
 def open_drive_and_prompt_for_cd(device_filename, disc_name, print_lock):
 	subprocess.run(['cdcontrol', '-f', device_filename, 'eject'])
 	with print_lock: print(device_filename + ':', 'Insert', disc_name)
-	time.sleep(drive_polling_interval)
-	while not subprocess.run(['cdcontrol', '-f', device_filename, 'cdid'], stdout=subprocess.PIPE).stdout:
+	cdid = ''
+	while not cdid:
 		time.sleep(drive_polling_interval)
+		cdid = subprocess.run(['cdcontrol', '-f', device_filename, 'cdid'],
+			stdout=subprocess.PIPE).stdout.strip()
+	return cdid
 
 def can_open_device_with_mode(device_filename, mode):
 	try:
